@@ -352,12 +352,14 @@ def main():
     logging.debug("Getting builds which are in Errata but not in tag: %s",
         opts.brew_pending_tag)
     missing = get_missing_builds(et_builds, tagged_builds)
-    logging.debug("Found %d builds which are not tagged. %s" % (len(missing), missing))
+    logging.info("Found %d builds which are not tagged %s but should be: %s" % 
+            (len(missing), opts.brew_pending_tag, ' '.join(missing)))
 
     logging.debug("Getting builds which are in tag: %s but not in Errata",
         opts.brew_pending_tag)
     extra = get_extra_builds(et_builds, tagged_builds)
-    logging.debug("Found %d builds which are tagged and shouldn't be. %s" % (len(extra), extra))
+    logging.info("Found %d builds which are tagged %s and shouldn't be: %s" %
+            (len(extra), opts.brew_pending_tag, ' '.join(extra)))
 
 
 
