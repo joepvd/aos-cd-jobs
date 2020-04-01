@@ -218,6 +218,20 @@ node {
                         )
                     }
                     echo "out: ${out}"
+
+                    jira_cmd = """
+                    if command -v yq; then
+                      yq -r '
+                        .advisories
+                        | keys_unsorted[] as \$k
+                        | "* *\\(\$k)*: https://errata.devel.redhat.com/advisory/\\(.[\$k])"
+                      ' group.yml
+                    fi
+                    """
+                    commonlib.shell(
+                        returnStdout: true,
+                        script: jira_cmd
+                    )
                 }
             }
             stage("add placeholder bugs to advisories") {
