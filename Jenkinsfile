@@ -1,60 +1,120 @@
+
+
 properties(
-  [
-    disableConcurrentBuilds()
-  ]
+    [
+        buildDiscarder(
+            logRotator(
+                artifactDaysToKeepStr: '',
+                artifactNumToKeepStr: '',
+                daysToKeepStr: '',
+                numToKeepStr: '360'
+            )
+        ),
+        [
+            $class : 'ParametersDefinitionProperty',
+            parameterDefinitions: [
+                [
+                    name: 'MOCK',
+                    description: 'Mock run to pickup new Jenkins parameters?',
+                    $class: 'hudson.model.BooleanParameterDefinition',
+                    defaultValue: false,
+                ],
+            ]
+        ],
+        disableResume(),
+        disableConcurrentBuilds()
+    ]
 )
 
-// https://issues.jenkins-ci.org/browse/JENKINS-33511
-def set_workspace() {
-  if(env.WORKSPACE == null) {
-    env.WORKSPACE = WORKSPACE = pwd()
-  }
-}
-
 node('openshift-build-1') {
-  try {
-    timeout(time: 30, unit: 'MINUTES') {
-      deleteDir()
-      set_workspace()
-      dir('aos-cd-jobs') {
-        stage('clone') {
-          checkout scm
-          sh 'git checkout master'
+
+    checkout scm
+
+    def buildlib = load( "pipeline-scripts/buildlib.groovy" )
+    buildlib.initialize()
+    def commonlib = buildlib.commonlib
+
+    // doozer_working must be in WORKSPACE in order to have artifacts archived
+    def doozer_working = "${WORKSPACE}/doozer_working"
+    buildlib.cleanWorkdir(doozer_working)
+
+    try {
+        sshagent(["openshift-bot"]) {
+
+            // Capture exceptions and don't let one problem stop other cleanup from executing
+            errors = []
+
+            try {
+                stage("push images") {
+                    dir ( "enterprise-images" ) {
+                        sh "doozer --working-dir ${doozer_working} --group sync-3.9 images:push --to-defaults"
+                        buildlib.cleanWorkdir(doozer_working)
+                        sh "doozer --working-dir ${doozer_working} --group sync-misc images:push --to-defaults"
+                        buildlib.cleanWorkdir(doozer_working)
+                        sh "doozer --working-dir ${doozer_working} --group sync-3.7 images:push --to-defaults"
+                        buildlib.cleanWorkdir(doozer_working)
+                    }
+                }
+            } catch ( ex1 ) {
+                echo "ERROR: ex1 occurred: " + ex1
+                errors[1] = ex1
+            }
+
+            try {
+                stage("legacy maint") {
+                    withEnv(["PATH=${env.PATH}:${pwd()}/build-scripts/ose_images"]) {
+                        sh "./scripts/maintenance.sh"
+                    }
+                }
+            } catch ( ex2 ) {
+                echo "ERROR: ex2 occurred: " + ex2
+                errors[2] = ex2
+            }
+
+            try {
+                stage("snapshot system setup") {
+                    snapshot_diff = sh(returnStdout: true, script: "./scripts/snapshot.sh /home/jenkins").trim()
+                    if ( snapshot_diff != "") {
+                        // Want to see what's in the snapshots directory?
+                        //   $ rclone tree s3SigningLogs:art-build-artifacts/buildvm-snapshots/
+                        try {
+                            sh("/bin/rclone -v copyto /home/jenkins/new_snapshot.txt s3SigningLogs:art-build-artifacts/buildvm-snapshots/`date '+%Y%m%d'`.txt")
+                        } catch ( snapErr ) {
+                            errors[4] = snapErr
+                            def snapshot = readFile("/home/jenkins/new_snapshot.txt")
+                            mail(to: "aos-art-automation+new-buildvm-snapshot@redhat.com",
+                                 from: "aos-art-automation@redhat.com",
+                                 replyTo: 'aos-team-art@redhat.com',
+                                 subject: "BuildVM Snapshot",
+                                 body: "${snapshot}");
+                        }
+                    }
+                }
+            } catch ( ex3 ) {
+                echo "ERROR: ex3 occurred: " + ex3
+                errors[3] = ex3
+            }
+
+            errors.each {
+                if (it != null) {
+                    throw it
+                }
+            }
         }
-        stage('run') {
-          final url = sh(
-            returnStdout: true,
-            script: 'git config remote.origin.url')
-          if(!(url =~ /^[-\w]+@[-\w]+(\.[-\w]+)*:/)) {
-            error('This job uses ssh keys for auth, please use an ssh url')
-          }
-          def prune = true, key = 'openshift-bot'
-          if(url.trim() != 'git@github.com:openshift/aos-cd-jobs.git') {
-            prune = false
-            key = "${(url =~ /.*:([^\/]+)/)[0][1]}-aos-cd-bot"
-          }
-          sshagent([key]) {
-            sh """\
-virtualenv ../env/
-. ../env/bin/activate
-pip install gitpython
-export GIT_PYTHON_TRACE=full
-${prune ? 'python -m aos_cd_jobs.pruner' : 'echo Fork, skipping pruner'}
-python -m aos_cd_jobs.updater
-"""
-          }
-        }
-      }
-    }
-  } catch(err) {
-    mail(
-      to: 'tbielawa@redhat.com, jupierce@redhat.com',
-      from: "aos-cicd@redhat.com",
-      subject: 'aos-cd-jobs-branches job: error',
-      body: """\
-Encountered an error while running the aos-cd-jobs-branches job: ${err}\n\n
+
+    } catch ( err ) {
+        // Replace flow control with: https://jenkins.io/blog/2016/12/19/declarative-pipeline-beta/ when available
+        mail(to: "aos-art-automation+failed-buildvm-maintenance@redhat.com",
+             from: "aos-art-automation@redhat.com",
+	     replyTo: "aos-team-art@redhat.com",
+             subject: "Error running buildvm maintenance",
+             body: """${err}
+
+
 Jenkins job: ${env.BUILD_URL}
-""")
-    throw err
-  }
+""");
+        // Re-throw the error in order to fail the job
+        throw err
+    }
+
 }
