@@ -1,60 +1,87 @@
-properties(
-  [
-    disableConcurrentBuilds()
-  ]
-)
+#!/usr/bin/env groovy
 
-// https://issues.jenkins-ci.org/browse/JENKINS-33511
-def set_workspace() {
-  if(env.WORKSPACE == null) {
-    env.WORKSPACE = WORKSPACE = pwd()
-  }
-}
+node {
+    checkout scm
+    def build = load("build.groovy")
+    def buildlib = build.buildlib
+    def commonlib = build.commonlib
 
-node('openshift-build-1') {
-  try {
-    timeout(time: 30, unit: 'MINUTES') {
-      deleteDir()
-      set_workspace()
-      dir('aos-cd-jobs') {
-        stage('clone') {
-          checkout scm
-          sh 'git checkout master'
-        }
-        stage('run') {
-          final url = sh(
-            returnStdout: true,
-            script: 'git config remote.origin.url')
-          if(!(url =~ /^[-\w]+@[-\w]+(\.[-\w]+)*:/)) {
-            error('This job uses ssh keys for auth, please use an ssh url')
-          }
-          def prune = true, key = 'openshift-bot'
-          if(url.trim() != 'git@github.com:openshift/aos-cd-jobs.git') {
-            prune = false
-            key = "${(url =~ /.*:([^\/]+)/)[0][1]}-aos-cd-bot"
-          }
-          sshagent([key]) {
-            sh """\
-virtualenv ../env/ -p python3
-. ../env/bin/activate
-pip install gitpython
-export GIT_PYTHON_TRACE=full
-${prune ? 'python -m aos_cd_jobs.pruner' : 'echo Fork, skipping pruner'}
-python -m aos_cd_jobs.updater
-"""
-          }
-        }
-      }
+    commonlib.describeJob("crc_sync", """
+        <h2>Publish CodeReady Containers client to mirrors</h2>
+        <a href="https://developers.redhat.com/products/codeready-containers/overview" target="_blank">Product Overview</a>
+
+        Timing: Whenever the team asks us to do a release, typically with a new
+        minor version GA.
+
+        The CRC team will give us the URL for downloading the latest release,
+        and the other parameters should be self-explanatory.
+    """)
+
+    properties(
+        [
+            buildDiscarder(
+                logRotator(
+                    artifactDaysToKeepStr: '',
+                    artifactNumToKeepStr: '30',
+                    daysToKeepStr: '',
+                    numToKeepStr: '30'
+                )
+            ),
+            [
+                $class : 'ParametersDefinitionProperty',
+                parameterDefinitions: [
+                    commonlib.suppressEmailParam(),
+                    string(
+                        name: 'RELEASE_URL',
+                        description: '(REQUIRED) Directory listing to latest release',
+                        trim: true,
+                    ),
+                    string(
+                        name: 'MAIL_LIST_FAILURE',
+                        description: 'Failure Mailing List',
+                        defaultValue: 'aos-art-automation+failed-crc-release@redhat.com',
+                        trim: true,
+                    ),
+                    commonlib.dryrunParam('Do not rsync the bits. Just download them and show what would have been copied XXX'),
+                    commonlib.mockParam(),
+                ]
+            ],
+            disableResume(),
+            disableConcurrentBuilds(),
+        ]
+    )
+
+    commonlib.checkMock()
+
+    stage("Initialize") {
+        buildlib.kinit()
+        currentBuild.displayName = "CRC #${currentBuild.number} "
+        currentBuild.description = params.RELEASE_URL
+        build.initialize()
     }
-  } catch(err) {
-    mail(
-      to: 'tbielawa@redhat.com, jupierce@redhat.com',
-      from: "aos-cicd@redhat.com",
-      subject: 'aos-cd-jobs-branches job: error',
-      body: """\
-Encountered an error while running the aos-cd-jobs-branches job: ${err}\n\n
-Jenkins job: ${env.BUILD_URL}
-""")
-    throw err
-  }
+
+    try {
+        sshagent(["openshift-bot"]) {
+            stage("Download release") { build.crcDownloadRelease() }
+            stage("Rsync the release") { build.crcRsyncRelease() }
+            stage("Push to mirrors") { build.crcPushPub() }
+        }
+    } catch (err) {
+        currentBuild.result = "FAILURE"
+        if (params.MAIL_LIST_FAILURE.trim()) {
+            commonlib.email(
+                to: params.MAIL_LIST_FAILURE,
+                from: "aos-art-automation+failed-crc-release@redhat.com",
+                replyTo: "aos-team-art@redhat.com",
+                subject: "Error releasing Code Ready Containers",
+                body: err,
+            )
+        }
+        throw err  // gets us a stack trace FWIW
+    } finally {
+        commonlib.safeArchiveArtifacts([
+                'email/*',
+            ]
+        )
+    }
 }
