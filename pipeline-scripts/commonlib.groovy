@@ -156,10 +156,10 @@ def mockParam() {
     ]
 }
 
-def dryrunParam() {
+def dryrunParam(description = 'Run job without side effects') {
     return [
-        name: 'DRYRUN',
-        description: 'Run job without side effects',
+        name: 'DRY_RUN',
+        description: description,
         $class: 'BooleanParameterDefinition',
         defaultValue: false,
     ]
