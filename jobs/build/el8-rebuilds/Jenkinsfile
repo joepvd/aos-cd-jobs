@@ -51,7 +51,8 @@ node {
 
     def version = params.BUILD_VERSION
     currentBuild.displayName += " - ${version}"
-    def branch = commonlib.shell("doozer --group openshift-${version} config:read-group branch").strip()
+    def branch = buildlib.doozer("--group openshift-${version} config:read-group branch", [capture: true]).strip()
+    echo "branch: ${branch}"
     if (branch.endsWith('-rhel-7')) {
         try {
             buildlib.kinit()
