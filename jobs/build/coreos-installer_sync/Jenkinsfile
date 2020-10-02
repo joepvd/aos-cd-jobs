@@ -89,7 +89,7 @@ node {
         if (params.DRY_RUN) {
             commonlib.shell(
                 script: [
-                    "echo 'Would have synced the following to ${mirror}:',
+                    "echo 'Would have synced the following to ${mirror}:'",
                     "tree ${workdir}/${params.VERSION}",
                 ].join('\n')
             )
