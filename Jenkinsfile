@@ -1,66 +1,137 @@
-properties(
-  [
-    disableConcurrentBuilds(),
-    disableResume(),
-    buildDiscarder(
-      logRotator(
-        artifactDaysToKeepStr: '60',
-        daysToKeepStr: '60')
-    ),
-  ]
-)
-
-// https://issues.jenkins-ci.org/browse/JENKINS-33511
-def set_workspace() {
-  if(env.WORKSPACE == null) {
-    env.WORKSPACE = WORKSPACE = pwd()
-  }
+node {
+    checkout scm
+    commonlib = load('pipeline-scripts/commonlib.groovy')
+    commonlib.describeJob("operator-sdk_sync", """
+        <h2>Sync operator-sdk to mirror</h2>
+        <b>Timing</b>: Manually, upon request. Expected to happen once every y-stream and
+        sporadically on z-stream releases.
+    """)
+    imagePath = 'registry-proxy.engineering.redhat.com/rh-osbs/openshift-ose-operator-sdk'
 }
 
-node('openshift-build-1') {
-  try {
-    timeout(time: 30, unit: 'MINUTES') {
-      deleteDir()
-      set_workspace()
-      dir('aos-cd-jobs') {
-        stage('clone') {
-          checkout scm
-          sh 'git checkout master'
-        }
-        stage('run') {
-          final url = sh(
-            returnStdout: true,
-            script: 'git config remote.origin.url')
-          if(!(url =~ /^[-\w]+@[-\w]+(\.[-\w]+)*:/)) {
-            error('This job uses ssh keys for auth, please use an ssh url')
-          }
-          def prune = true, key = 'openshift-bot'
-          if(url.trim() != 'git@github.com:openshift/aos-cd-jobs.git') {
-            prune = false
-            key = "${(url =~ /.*:([^\/]+)/)[0][1]}-aos-cd-bot"
-          }
-          sshagent([key]) {
-            sh """\
-virtualenv ../env/ -p python3
-. ../env/bin/activate
-pip install gitpython
-export GIT_PYTHON_TRACE=full
-${prune ? 'python -m aos_cd_jobs.pruner' : 'echo Fork, skipping pruner'}
-python -m aos_cd_jobs.updater
-"""
-          }
-        }
-      }
+pipeline {
+    agent any
+
+    options {
+        disableResume()
+        skipDefaultCheckout()
     }
-  } catch(err) {
-    mail(
-      to: 'jupierce@redhat.com',
-      from: "aos-cicd@redhat.com",
-      subject: 'aos-cd-jobs-branches job: error',
-      body: """\
-Encountered an error while running the aos-cd-jobs-branches job: ${err}\n\n
-Jenkins job: ${env.BUILD_URL}
-""")
-    throw err
-  }
+
+    parameters {
+        string(
+            name: 'OCP_VERSION',
+            description: 'Under which directory to place the binaries.<br/>' +
+                         'Examples:<br/>' +
+                         '<ul>' +
+                         '<li>4.7.0</li>' +
+                         '<li>4.7.0-rc.0</li>' +
+                         '</ul>',
+            defaultValue: '',
+            trim: true,
+        )
+        string(
+            name: 'BUILD_TAG',
+            description: 'Build of ose-operator-sdk from which the contents should be extracted.<br/>' +
+                         'Examples:<br/>' +
+                         '<ul>' +
+                         '<li>v4.7.0-202101261648.p0</li>' +
+                         '<li>v4.7.0</li>' +
+                         '<li>v4.7</li>' +
+                         '</ul>',
+            defaultValue: '',
+            trim: true,
+        )
+    }
+
+    stages {
+        stage('pre-flight') {
+            steps {
+                script {
+                    if (!params.OCP_VERSION) {
+                        error 'OCP_VERSION must be specified'
+                    }
+                    if (!params.BUILD_TAG) {
+                        error 'BUILD_TAG must be specified'
+                    }
+                    sdkVersion = ''
+                    buildvmArch = sh(script: 'arch', returnStdout: true).trim()
+
+                    currentBuild.description = "${params.BUILD_TAG}"
+                    currentBuild.displayName = "${params.OCP_VERSION}"
+
+                    archList = ['x86_64']
+                    readJSON(
+                        text: sh(
+                            script: "skopeo inspect --raw docker://${imagePath}:${params.BUILD_TAG}",
+                            returnStdout: true,
+                        )
+                    ).manifests.each {
+                        // We want x86_64 to be the first in the list, as that will be used to extract the operator_sdk version.
+                        def sdkArch = it.platform.architecture == 'amd64' ? 'x86_64' : it.platform.architecture
+                        def data = [arch: sdkArch, digest: it.digest]
+                        println("data: ${data}")
+
+                        if (archList.contains(sdkArch)) {
+                            def ind = archList.findIndexOf({it == 'x86_64'})
+                            archList.set(ind, data)
+                        } else {
+                            archList.add(data)
+                        }
+                    }
+                    echo "archList: ${archList}"
+                }
+            }
+        }
+        stage('extract binaries') {
+            steps {
+                script {
+                    archList.each {
+                        sh "rm -rf ./${it.arch} && mkdir ./${it.arch}"
+                        dir("./${it.arch}") {
+                            sh "oc image extract ${imagePath}@${it.digest} --path /usr/local/bin/operator-sdk:. --confirm"
+                            sh "chmod +x operator-sdk"
+
+                            if (it.arch == buildvmArch) {
+                                def sdkVersionRaw = sh(script: './operator-sdk version', returnStdout: true)
+                                sdkVersion = (sdkVersionRaw =~ /operator-sdk version: "([^"]+)"/).findAll()[0][1]
+                                currentBuild.displayName += "/${sdkVersion}"
+                            }
+
+                            def tarballFilename = "operator-sdk-${sdkVersion}-linux-${it.arch}.tar.gz"
+                            sh "tar -csvf ${tarballFilename} ./operator-sdk"
+                            sh "rm -f ./operator-sdk"
+
+                            if (it.arch == "x86_64") {
+                                sh "oc image extract ${imagePath}@${it.digest} --path /usr/share/operator-sdk/mac/operator-sdk:. --confirm"
+                                sh "chmod +x operator-sdk"
+                                tarballFilename = "operator-sdk-${sdkVersion}-darwin-${it.arch}.tar.gz"
+                                sh "tar -csvf ${tarballFilename} ./operator-sdk"
+                                sh "rm -f ./operator-sdk"
+                            }
+
+                        }
+                    }
+                }
+            }
+        }
+        stage('sync tarballs') {
+            steps {
+                script {
+                    sh "pwd"
+                    sh "tree ppc64le/ s390x/ x86_64/"
+                    // manifestList.each {
+                    //     def arch = it.platform.architecture == 'amd64' ? 'x86_64' : it.platform.architecture
+                    //     dir("./${arch}") {
+                    //         sshagent(['aos-cd-test']) {
+                    //             sh "ssh use-mirror-upload.ops.rhcloud.com -- mkdir -p /srv/pub/openshift-v4/${arch}/clients/operator-sdk/${params.OCP_VERSION}"
+                    //             sh "scp ${tarballFilename} use-mirror-upload.ops.rhcloud.com:/srv/pub/openshift-v4/${arch}/clients/operator-sdk/${params.OCP_VERSION}"
+                    //             sh "ssh use-mirror-upload.ops.rhcloud.com -- ln --symbolic --force --no-dereference ${params.OCP_VERSION} /srv/pub/openshift-v4/${arch}/clients/operator-sdk/latest"
+                    //             sh "ssh use-mirror-upload.ops.rhcloud.com -- /usr/local/bin/push.pub.sh openshift-v4/${arch}/clients/operator-sdk -v"
+                    //         }
+                    //     }
+                    // }
+                }
+            }
+        }
+    }
 }
