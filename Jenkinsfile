@@ -1,66 +1,45 @@
-properties(
-  [
-    disableConcurrentBuilds(),
-    disableResume(),
-    buildDiscarder(
-      logRotator(
-        artifactDaysToKeepStr: '60',
-        daysToKeepStr: '60')
-    ),
-  ]
-)
+node() {
+    checkout scm
+    def buildlib = load("pipeline-scripts/buildlib.groovy")
+    def commonlib = buildlib.commonlib
+    def slacklib = commonlib.slacklib
+    buildlib.kinit()
 
-// https://issues.jenkins-ci.org/browse/JENKINS-33511
-def set_workspace() {
-  if(env.WORKSPACE == null) {
-    env.WORKSPACE = WORKSPACE = pwd()
-  }
-}
+    properties(
+        [
+            disableConcurrentBuilds(),
+            [
+                $class : 'ParametersDefinitionProperty',
+                parameterDefinitions: [
+                    commonlib.ocpVersionParam('BUILD_VERSION'),
+                    booleanParam(
+                        name: 'SEND_TO_SLACK',
+                        defaultValue: true,
+                        description: "If false, output will only be sent to console"
+                    ),
+                    commonlib.mockParam(),
+                ]
+            ],
+        ]
+    )
 
-node('openshift-build-1') {
-  try {
-    timeout(time: 30, unit: 'MINUTES') {
-      deleteDir()
-      set_workspace()
-      dir('aos-cd-jobs') {
-        stage('clone') {
-          checkout scm
-          sh 'git checkout master'
+    commonlib.checkMock()
+
+    timestamps {
+
+        slackChannel = slacklib.to(BUILD_VERSION)
+
+        report = """
+            multi line
+
+            slack
+            message to be trimmed
+            """
+        if (report) {
+            echo "The report:\n${report}"
+            if (params.SEND_TO_SLACK) {
+                slackChannel.say(":alert: Howdy! This is joep testing stuff \n${report}")
+            }
         }
-        stage('run') {
-          final url = sh(
-            returnStdout: true,
-            script: 'git config remote.origin.url')
-          if(!(url =~ /^[-\w]+@[-\w]+(\.[-\w]+)*:/)) {
-            error('This job uses ssh keys for auth, please use an ssh url')
-          }
-          def prune = true, key = 'openshift-bot'
-          if(url.trim() != 'git@github.com:openshift/aos-cd-jobs.git') {
-            prune = false
-            key = "${(url =~ /.*:([^\/]+)/)[0][1]}-aos-cd-bot"
-          }
-          sshagent([key]) {
-            sh """\
-virtualenv ../env/ -p python3
-. ../env/bin/activate
-pip install gitpython
-export GIT_PYTHON_TRACE=full
-${prune ? 'python -m aos_cd_jobs.pruner' : 'echo Fork, skipping pruner'}
-python -m aos_cd_jobs.updater
-"""
-          }
-        }
-      }
     }
-  } catch(err) {
-    mail(
-      to: 'jupierce@redhat.com',
-      from: "aos-cicd@redhat.com",
-      subject: 'aos-cd-jobs-branches job: error',
-      body: """\
-Encountered an error while running the aos-cd-jobs-branches job: ${err}\n\n
-Jenkins job: ${env.BUILD_URL}
-""")
-    throw err
-  }
 }
