@@ -54,6 +54,7 @@ def getDisplayName() {
     return "${currentBuild.displayName}"
 }
 
+@NonCPS
 def stripMsg(msg) {
     def out_txt = []
     msg.eachLine {line ->
