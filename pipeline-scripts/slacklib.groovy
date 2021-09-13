@@ -94,7 +94,7 @@ def notifySlack(channel, as_user, text, attachments=[], thread_ts=null, replyBro
         ]
 
         if ( text ) {
-            base['text'] = text
+            base['text'] = stripMsg(text)
         }
 
         if ( thread_ts ) {
@@ -202,7 +202,7 @@ class SlackOutputter {
         def new_thread_ts = this.thread_ts
 
         if ( this.channel ) {
-            def responseJson = script.notifySlack(this.channel, as_user, stripMsg(msg), attachments, this.thread_ts, replyBroadcast, this.verbose)
+            def responseJson = script.notifySlack(this.channel, as_user, msg, attachments, this.thread_ts, replyBroadcast, this.verbose)
             if ( ! new_thread_ts ) {
                 new_thread_ts = responseJson.message.ts
             }
@@ -219,7 +219,7 @@ class SlackOutputter {
         if ( exception ) {
             msg += " (Exception: ${exception})"
         }
-        return this.say(stripMsg(msg), attachments, true)
+        return this.say(msg, attachments, true)
     }
 
     public task(goal, closure) {
