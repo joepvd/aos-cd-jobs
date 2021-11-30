@@ -42,8 +42,8 @@ pipeline {
         stage('Sync to mirror') {
             steps {
                 sh "tree /mnt/redhat/staging-cds/developer/openshift-pipelines-client/${params.TKN_VERSION}/signed/all ; cat /mnt/redhat/staging-cds/developer/openshift-pipelines-client/${params.TKN_VERSION}/signed/all/sha256sum.txt"
-                syncDirToS3Mirror.syncDirToS3Mirror("/mnt/redhat/staging-cds/developer/openshift-pipelines-client/${params.TKN_VERSION}/signed/all/", "${s3_target_dir}/" )
-                syncDirToS3Mirror.syncDirToS3Mirror("/mnt/redhat/staging-cds/developer/openshift-pipelines-client/${params.TKN_VERSION}/signed/all/", "/pub/openshift-v4/x86_64/clients/pipeline/latest/" )
+                commonlib.syncDirToS3Mirror.syncDirToS3Mirror("/mnt/redhat/staging-cds/developer/openshift-pipelines-client/${params.TKN_VERSION}/signed/all/", "${s3_target_dir}/" )
+                commonlib.syncDirToS3Mirror.syncDirToS3Mirror("/mnt/redhat/staging-cds/developer/openshift-pipelines-client/${params.TKN_VERSION}/signed/all/", "/pub/openshift-v4/x86_64/clients/pipeline/latest/" )
 
                 sshagent(['aos-cd-test']) {
                     sh "tree /mnt/redhat/staging-cds/developer/openshift-pipelines-client/${params.TKN_VERSION}/signed/all"
