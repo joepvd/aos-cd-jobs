@@ -8,46 +8,54 @@ from jenkinsapi.custom_exceptions import NoBuildData
 from subprocess import run
 
 
+VERSIONS = [
+    "4.6",
+    "4.7",
+    "4.8",
+    "4.9",
+    "4.10",
+    "4.11"
+]
+
+ARCHES = [
+    "amd64",
+    "s390x",
+    "ppc64le",
+    "arm64"
+]
+
+RHCOS_URLS = {
+    'amd64': 'https://jenkins-rhcos-art.cloud.privileged.psi.redhat.com',
+    's390x': 'https://jenkins-rhcos.cloud.s390x.psi.redhat.com',
+    'ppc64le': 'https://jenkins-rhcos.cloud.p8.psi.redhat.com',
+    'arm64': 'https://jenkins-rhcos.cloud.arm.psi.redhat.com'
+}
+
+
 class CheckRhcosPipeline:
     def __init__(self, runtime: Runtime, channel: str):
         self.runtime = runtime
         self.channel = channel
         self.result = dict()
 
-        self.versions = [
-            "4.6",
-            "4.7",
-            "4.8",
-            "4.9",
-            "4.10",
-            "4.11"
-        ]
-
-        self.arches = [
-            "amd64",
-            "s390x",
-            "ppc64le",
-            "arm64"
-        ]
-
-        self.rhcos_urls = {
-            'amd64': 'https://jenkins-rhcos-art.cloud.privileged.psi.redhat.com',
-            's390x': 'https://jenkins-rhcos.cloud.s390x.psi.redhat.com',
-            'ppc64le': 'https://jenkins-rhcos.cloud.p8.psi.redhat.com',
-            'arm64': 'https://jenkins-rhcos.cloud.arm.psi.redhat.com'
-        }
-
     async def get_data(self):
-        for arch in self.arches:
-            self.result[arch] = dict()
-            self.result[arch] = await self.get_data_for_arch(arch)
+        futures = []
+        for arch in ARCHES:
+            futures.append(self.get_data_for_arch(arch))
+        answers = await asyncio.gather(*futures)
+
+        for arch, answer in zip(ARCHES, answers):
+            self.result[arch] = answer
+
 
     async def get_data_for_arch(self, arch):
-        jenkins = Jenkins(self.rhcos_urls[arch])
+        jenkins = Jenkins(RHCOS_URLS[arch])
+        print(f"Checking {arch}")
 
         a = dict()
-        for version in self.versions:
+        for version in VERSIONS:
             if arch == 'arm64' and int(version.split('.')[-1]) < 9:
+                # arm64 was introduced in 4.9
                 continue
             try:
                 project = [p for p in jenkins.keys() if p.endswith(f'-{version}')][0]
@@ -64,7 +72,7 @@ class CheckRhcosPipeline:
             try:
                 good_id = pipeline.get_last_good_buildnumber()
             except NoBuildData:
-                bad_id = -1
+                good_id = -1
             try:
                 bad_id = pipeline.get_last_failed_buildnumber()
             except NoBuildData:
@@ -77,13 +85,14 @@ class CheckRhcosPipeline:
             else:
                 r = 'No results'
             a[version] = r
+        print(f"Done checking {arch}")
         return a
 
     def present_data(self):
         version_result = {}
-        for version in self.versions:
+        for version in VERSIONS:
             version_result[version] = {}
-            for arch in self.arches:
+            for arch in ARCHES:
                 r = self.result[arch].get(version, None)
                 version_result[version][arch] = r
         print(version_result)
@@ -97,14 +106,14 @@ class CheckRhcosPipeline:
         """
 
         header = "<td></td>"
-        for arch in self.arches:
+        for arch in ARCHES:
             header = f'{header}\n<td>{arch}</td>'
 
         output = f'{output}\n{header}\n</tr>'
 
-        for version in self.versions:
+        for version in VERSIONS:
             output = f"{output}\n<tr><td>{version}</td>"
-            for arch in self.arches:
+            for arch in ARCHES:
                 result = version_result[version][arch]
                 if result == 'good':
                     color = "green"
