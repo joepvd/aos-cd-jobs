@@ -4,7 +4,7 @@ manager = "vlaad@redhat.com"
 package_owner = "lmeyer@redhat.com"
 
 [build_config]
-ocp_build_data_url = "https://github.com/openshift/ocp-build-data.git"
+ocp_build_data_url = "https://github.com/joepvd/ocp-build-data.git"
 ocp_build_data_repo_push_url = "git@github.com:openshift/ocp-build-data.git"
 
 [email]
