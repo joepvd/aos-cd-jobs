@@ -8,15 +8,20 @@ description = ""
 failed = false
 
 def runFor(version) {
-    b = build(
+   timeout(activity: true, time: 30, unit: 'MINUTES') {
+        b = build(
             job: '../scanning/scanning%2Fimages-health',
             parameters: [
                 string(name: 'BUILD_VERSION', value: version),
             ],
             propagate: false,
         )
-    description += "${version} - ${b.result}\n"
-    failed |= (b.result != "SUCCESS")
+        description += "${version} - ${b.result}\n"
+        failed |= (b.result != "SUCCESS")
+    } catch(te) {
+        description += "${version - ERROR}\n"
+        failed = true
+    }
 }
 
 @NonCPS
