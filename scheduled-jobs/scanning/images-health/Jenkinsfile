@@ -10,7 +10,7 @@ failed = false
 def runFor(version) {
    timeout(activity: true, time: 30, unit: 'MINUTES') {
         b = build(
-            job: '../scanning/scanning%2Fimages-health',
+            job: '../build/build%2Fimages-health',
             parameters: [
                 string(name: 'BUILD_VERSION', value: version),
             ],
