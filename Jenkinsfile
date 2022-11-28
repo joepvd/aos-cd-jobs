@@ -1,66 +1,65 @@
-properties(
-  [
-    disableConcurrentBuilds(),
-    disableResume(),
-    buildDiscarder(
-      logRotator(
-        artifactDaysToKeepStr: '60',
-        daysToKeepStr: '60')
-    ),
-  ]
-)
+node() {
+    checkout scm
+    def buildlib = load("pipeline-scripts/buildlib.groovy")
+    def commonlib = buildlib.commonlib
+    def slacklib = commonlib.slacklib
+    buildlib.kinit()
 
-// https://issues.jenkins-ci.org/browse/JENKINS-33511
-def set_workspace() {
-  if(env.WORKSPACE == null) {
-    env.WORKSPACE = WORKSPACE = pwd()
-  }
-}
+    properties(
+        [
+            disableConcurrentBuilds(),
+            [
+                $class : 'ParametersDefinitionProperty',
+                parameterDefinitions: [
+                    commonlib.ocpVersionParam('BUILD_VERSION'),
+                    booleanParam(
+                        name: 'SEND_TO_SLACK',
+                        defaultValue: true,
+                        description: "If false, output will only be sent to console"
+                    ),
+                    commonlib.mockParam(),
+                ]
+            ],
+        ]
+    )
 
-node('openshift-build-1') {
-  try {
-    timeout(time: 30, unit: 'MINUTES') {
-      deleteDir()
-      set_workspace()
-      dir('aos-cd-jobs') {
-        stage('clone') {
-          checkout scm
-          sh 'git checkout master'
+    commonlib.checkMock()
+
+    GITHUB_BASE = "git@github.com:openshift" // buildlib uses this global var
+
+    // doozer_working must be in WORKSPACE in order to have artifacts archived
+    def doozer_working = "${WORKSPACE}/doozer_working"
+    buildlib.cleanWorkdir(doozer_working)
+
+    def group = "openshift-${params.BUILD_VERSION}"
+    def doozerOpts = "--working-dir ${doozer_working} --group ${group} "
+
+    timestamps {
+
+        releaseChannel = slacklib.to(BUILD_VERSION)
+        /* Disabling notifications in #aos-art until https://issues.redhat.com/browse/ART-3425
+         * is resolved, as it generated quite some noise
+         */
+        // aosArtChannel = slacklib.to("#aos-art")
+
+        try {
+            report = buildlib.doozer("${doozerOpts} images:health", [capture: true]).trim()
+            if (report) {
+                echo "The report:\n${report}"
+                if (params.SEND_TO_SLACK) {
+                    releaseChannel.say(":alert: Howdy! There are some issues to look into for ${group}\n${report}")
+                    // aosArtChannel.say(":alert: Howdy! There are some issues to look into for ${group}\n${report}")
+                }
+            } else {
+                echo "There are no issues to report."
+                if (params.SEND_TO_SLACK) {
+                    releaseChannel.say(":white_check_mark: All images are healthy for ${group}")
+                }
+            }
+        } catch (exception) {
+            releaseChannel.say(":alert: Image health check job failed!\n${BUILD_URL}")
+            currentBuild.result = "FAILURE"
+            throw exception  // gets us a stack trace FWIW
         }
-        stage('run') {
-          final url = sh(
-            returnStdout: true,
-            script: 'git config remote.origin.url')
-          if(!(url =~ /^[-\w]+@[-\w]+(\.[-\w]+)*:/)) {
-            error('This job uses ssh keys for auth, please use an ssh url')
-          }
-          def prune = true, key = 'openshift-bot'
-          if(url.trim() != 'git@github.com:openshift/aos-cd-jobs.git') {
-            prune = false
-            key = "${(url =~ /.*:([^\/]+)/)[0][1]}-aos-cd-bot"
-          }
-          sshagent([key]) {
-            sh """\
-virtualenv ../env/ -p python3
-. ../env/bin/activate
-pip install gitpython
-export GIT_PYTHON_TRACE=full
-${prune ? 'python -m aos_cd_jobs.pruner' : 'echo Fork, skipping pruner'}
-python -m aos_cd_jobs.updater
-"""
-          }
-        }
-      }
     }
-  } catch(err) {
-    mail(
-      to: 'jupierce@redhat.com',
-      from: "aos-cicd@redhat.com",
-      subject: 'aos-cd-jobs-branches job: error',
-      body: """\
-Encountered an error while running the aos-cd-jobs-branches job: ${err}\n\n
-Jenkins job: ${env.BUILD_URL}
-""")
-    throw err
-  }
 }
