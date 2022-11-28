@@ -9,7 +9,7 @@ failed = false
 
 def runFor(version) {
     b = build(
-            job: '../scanning/scanning%2Fimages-health',
+            job: '../scanning/scanning%2Fnag-upstream',
             parameters: [
                 string(name: 'BUILD_VERSION', value: version),
             ],
