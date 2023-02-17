@@ -68,6 +68,9 @@ async def main():
         "podman",
         "python3-openvswitch",
     ]
+    exclude_packages = []
+    if major > 3 and minor > 10:
+        exclude_packages.append('redhat-release-coreos')
 
     # PLASHET_CONFIG should be moved to ocp-build-data in the future
     PLASHET_CONFIG = {
@@ -78,6 +81,7 @@ async def main():
             "include_embargoed": True,
             "embargoed_tags": [f"rhaos-{major}.{minor}-rhel-9-embargoed"],
             "include_previous_packages": previous_packages,
+            "exclude_packages": [],
         },
         "rhel-9-server-ose-rpms": {
             "slug": "el9",
@@ -86,6 +90,7 @@ async def main():
             "include_embargoed": False,
             "embargoed_tags": [f"rhaos-{major}.{minor}-rhel-9-embargoed"],
             "include_previous_packages": previous_packages,
+            "exclude_packages": [],
         },
         "rhel-9-server-ironic-rpms": {
             "slug": "ironic-el9",
@@ -94,6 +99,7 @@ async def main():
             "include_embargoed": False,
             "embargoed_tags": [],  # unlikely to exist until we begin using -gating tag
             "include_previous_packages": [],
+            "exclude_packages": [],
         },
         "rhel-8-server-ose-rpms-embargoed": {
             "slug": "el8-embargoed",
@@ -102,6 +108,7 @@ async def main():
             "include_embargoed": True,
             "embargoed_tags": [f"rhaos-{major}.{minor}-rhel-8-embargoed"],
             "include_previous_packages": previous_packages,
+            "exclude_packages": exclude_packages,
         },
         "rhel-8-server-ose-rpms": {
             "slug": "el8",
@@ -110,6 +117,7 @@ async def main():
             "include_embargoed": False,
             "embargoed_tags": [f"rhaos-{major}.{minor}-rhel-8-embargoed"],
             "include_previous_packages": previous_packages,
+            "exclude_packages": exclude_packages,
         },
         "rhel-8-server-ironic-rpms": {
             "slug": "ironic-el8",
@@ -118,6 +126,7 @@ async def main():
             "include_embargoed": False,
             "embargoed_tags": [],  # unlikely to exist until we begin using -gating tag
             "include_previous_packages": [],
+            "exclude_packages": [],
         },
         "rhel-server-ose-rpms-embargoed": {
             "slug": "el7-embargoed",
@@ -126,6 +135,7 @@ async def main():
             "include_embargoed": True,
             "embargoed_tags": [f"rhaos-{major}.{minor}-rhel-7-embargoed"],
             "include_previous_packages": previous_packages,
+            "exclude_packages": [],
         },
         "rhel-server-ose-rpms": {
             "slug": "el7",
@@ -134,6 +144,7 @@ async def main():
             "include_embargoed": False,
             "embargoed_tags": [f"rhaos-{major}.{minor}-rhel-7-embargoed"],
             "include_previous_packages": previous_packages,
+            "exclude_packages": [],
         },
     }
 
@@ -154,6 +165,7 @@ async def main():
         embargoed_tags = config["embargoed_tags"]
         tag_pvs = ((config["tag"], config["product_version"]),)
         include_previous_packages = config["include_previous_packages"]
+        exclude_packages = config["exclude_packages"]
         base_dir = Path(working_dir, f"plashets/{major}.{minor}/{assembly}/{slug}")
         # We can't safely run doozer config:plashet from-tags in parallel as this moment.
         # Build plashet repos one by one.
@@ -168,6 +180,7 @@ async def main():
                                                    embargoed_tags=embargoed_tags,
                                                    tag_pvs=tag_pvs,
                                                    include_previous_packages=include_previous_packages,
+                                                   exclude_packages=exclude_packages,
                                                    dry_run=dry_run)
         LOGGER.info("Plashet repo for %s created: %s", repo_type, local_path)
         symlink_path = create_latest_symlink(
@@ -205,8 +218,8 @@ async def load_group_config(group: str, assembly: str, env=None) -> Dict:
 
 async def build_plashet_from_tags(group: str, assembly: str, base_dir: os.PathLike, name: str, arches: Sequence[str],
                                   include_embargoed: bool, signing_mode: str, signing_advisory: int, tag_pvs: Sequence[Tuple[str, str]],
-                                  embargoed_tags: Optional[Sequence[str]], include_previous_packages: Optional[Sequence[str]] = None,
-                                  poll_for: int = 0, dry_run: bool = False):
+                                  embargoed_tags: Optional[Sequence[str]], include_previous_packages: Sequence[str] = [],
+                                  exclude_packages: Sequence[str] = [], poll_for: int = 0, dry_run: bool = False):
     """ Builds Plashet repo with "from-tags"
     """
     repo_path = Path(base_dir, name)
@@ -239,6 +252,8 @@ async def build_plashet_from_tags(group: str, assembly: str, base_dir: os.PathLi
         cmd.extend(["--brew-tag", tag, pv])
     for pkg in include_previous_packages:
         cmd.extend(["--include-previous-for", pkg])
+    for pkg in exclude_packages:
+        cmd.extend(["--exclude-package", pkg])
     if poll_for:
         cmd.extend(["--poll-for", str(poll_for)])
 
