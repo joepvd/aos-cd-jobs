@@ -237,6 +237,8 @@ async def build_plashet_from_tags(group: str, assembly: str, base_dir: os.PathLi
     ]
     for arch in arches:
         cmd.extend(["--arch", arch, signing_mode])
+    for pkg in exclude_packages:
+        cmd.extend(["--exclude-package", pkg])
     cmd.extend([
         "from-tags",
         "--signing-advisory-id", f"{signing_advisory or 54765}",
@@ -252,8 +254,6 @@ async def build_plashet_from_tags(group: str, assembly: str, base_dir: os.PathLi
         cmd.extend(["--brew-tag", tag, pv])
     for pkg in include_previous_packages:
         cmd.extend(["--include-previous-for", pkg])
-    for pkg in exclude_packages:
-        cmd.extend(["--exclude-package", pkg])
     if poll_for:
         cmd.extend(["--poll-for", str(poll_for)])
 
