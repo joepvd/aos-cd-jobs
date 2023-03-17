@@ -24,6 +24,12 @@ node {
                     commonlib.mockParam(),
                     commonlib.ocpVersionParam('BUILD_VERSION', '4'),
                     string(
+                      name: 'RHCOS_VERSION',
+                      description: 'Override rhcos version as defined in ocp-build-data for the release',
+                      defaultValue: '',
+                      trim: true,
+                    ),
+                    string(
                         name: 'ARCHES',
                         description: '(Legacy pipeline only) List of architectures to build for RHCOS.',
                         defaultValue: commonlib.brewArches.join(','),
@@ -65,7 +71,7 @@ node {
         // Disabling compose lock for now. Ideally we achieve a stable repo for RHCOS builds in the future,
         // but for now, being this strict is slowing down the delivery of nightlies.
         //lock("compose-lock-${params.BUILD_VERSION}") {
-        lock(resource: "rhcos-lock-${params.BUILD_VERSION}", skipIfLocked: true) {  // wait for all to succeed or fail for this version before starting more
+        //lock(resource: "rhcos-lock-${params.BUILD_VERSION}", skipIfLocked: true) {  // wait for all to succeed or fail for this version before starting more
             skipBuild = false
 
             // Check if urls.rhcos_release_base.multi is defined in group.yml
@@ -82,11 +88,22 @@ node {
                     withCredentials([file(credentialsId: kubeconfigs['multi'], variable: 'KUBECONFIG')]) {
                         // we want to see the stderr as it runs, so will not capture with commonlib.shell;
                         // but somehow it is buffering the stderr anyway and [lmeyer] cannot figure out why.
-                        text = sh(returnStdout: true, script: """
-                              no_proxy=api.ocp-virt.prod.psi.redhat.com,\$no_proxy \\
-                              artcd --config=./config/artcd.toml build-rhcos --version=${params.BUILD_VERSION} \\
-                                    --ignore-running=${params.IGNORE_RUNNING} --new-build=${params.NEW_BUILD}
-                        """)
+                        cmd = [
+                            'no_proxy=api.ocp-virt.prod.psi.redhat.com,\$no_proxy',
+                            'artcd',
+                            '--config=./config/artcd.toml',
+                            'build-rhcos',
+                            "--ocp-version=${params.BUILD_VERSION}",
+                            "--ignore-running=${params.IGNORE_RUNNING}",
+                            "--new-build=${params.NEW_BUILD}",
+                        ]
+                        if (params.RHCOS_VERSION) {
+                           cmd << "--rhcos-version=${params.RHCOS_VERSION}"
+                        }
+                        text = sh(
+                            script: cmd.join(' '),
+                            returnStdout: true
+                        )
                         data = readJSON text: text
                         if (data["action"] == "skip") {
                             skipBuild = true
@@ -162,7 +179,7 @@ node {
                     parallel archJobs
                 }
             }
-        }
+        // }
         if (skipBuild) {
             currentBuild.displayName += " -- Skipped"
             currentBuild.description += " -- skipped (build already in progress)"

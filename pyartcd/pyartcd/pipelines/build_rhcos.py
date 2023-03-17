@@ -1,5 +1,6 @@
-from pyartcd.cli import cli, pass_runtime
+from pyartcd.cli import cli, click_coroutine, pass_runtime
 from pyartcd.runtime import Runtime
+from pyartcd.util import load_group_config
 import openshift as oc
 import click
 import requests
@@ -37,11 +38,12 @@ class TimeoutHTTPAdapter(HTTPAdapter):
 
 class BuildRhcosPipeline:
     """Use the Jenkins API to query for existing builds and perhaps kick off a new one and wait for it."""
-    def __init__(self, runtime: Runtime, new_build: bool, ignore_running: bool, version: str):
+    def __init__(self, runtime: Runtime, new_build: bool, ignore_running: bool, ocp_version: str, rhcos_version: str = ''):
         self.runtime = runtime
         self.new_build = new_build
         self.ignore_running = ignore_running
-        self.version = version
+        self.ocp_version = ocp_version
+        self._rhcos_version = rhcos_version
         self.api_token = None
 
         self.request_session = requests.Session()
@@ -52,9 +54,22 @@ class BuildRhcosPipeline:
         )
         self.request_session.mount("https://", TimeoutHTTPAdapter(max_retries=retries))
 
-    def run(self):
-        self.request_session.headers.update({"Authorization": f"Bearer {self.retrieve_auth_token()}"})
-        current = self.query_existing_builds()
+    @property
+    async def rhcos_version(self):
+        if self._rhcos_version:
+            return self._rhcos_version
+        group_cfg = await load_group_config(f'openshift-{self.ocp_version}', 'stream')
+        try:
+            self._rhcos_version = group_cfg['rhcos']['version']
+        except KeyError:
+            self._rhcos_version = self.ocp_version
+        return self._rhcos_version
+
+
+
+    async def run(self):
+        self.request_session.headers.update({"Authorization": f"Bearer {await self.retrieve_auth_token()}"})
+        current = await self.query_existing_builds()
         result = {}
         if current and not self.ignore_running:
             result["action"] = "skip"
@@ -69,14 +84,14 @@ class BuildRhcosPipeline:
             # double-click protection - if the parameters differ both are started), and should this
             # happen we will see a build start, assume we started it, and watch it to completion.
             # this seems unlikely to cause any problems other than mild confusion.
-            self.start_build()
+            await self.start_build()
             result["action"] = "build"
-            result["builds"] = self.wait_for_builds()
+            result["builds"] = await self.wait_for_builds()
 
         # final status in stdout
         print(json.dumps(result))
 
-    def retrieve_auth_token(self) -> str:
+    async def retrieve_auth_token(self) -> str:
         """Retrieve the auth token from the Jenkins service account to use with Jenkins API"""
         # use the first secret named after the jenkins service account (there can be several)
         secret = next((s for s in oc.selector('secrets') if s.name().startswith('jenkins-token-')), None)
@@ -99,7 +114,7 @@ class BuildRhcosPipeline:
     def build_url(job: str, number: int) -> str:
         return f"{JENKINS_BASE_URL}/job/{job}/{number}/"
 
-    def query_existing_builds(self) -> List[Dict]:
+    async def query_existing_builds(self) -> List[Dict]:
         """Check if there are any existing builds for the given version. Returns builds in progress."""
         builds = []
         for job in ("build", "build-arch", "release"):
@@ -111,15 +126,16 @@ class BuildRhcosPipeline:
                 if b["result"] is None  # build is still running when it has no status
             )
 
-        return [b for b in builds if b["parameters"].get("STREAM") == self.version]
+        return [b for b in builds if b["parameters"].get("STREAM") == await self.rhcos_version]
 
-    def start_build(self):
+    async def start_build(self):
         """Start a new build for the given version"""
         # determine parameters
-        params = dict(STREAM=self.version, EARLY_ARCH_JOBS="false")
+        params = dict(STREAM=self.rhcos_version, EARLY_ARCH_JOBS="false")
         if self.new_build:
             params["FORCE"] = "true"
 
+        print(f'Parameters for request: {params}')
         # start the build
         self.request_session.post(
             f"{JENKINS_BASE_URL}/job/build/buildWithParameters",
@@ -132,13 +148,13 @@ class BuildRhcosPipeline:
             if initial_builds:
                 break
             time.sleep(1)  # may take a few seconds for the build to start
-            initial_builds = self.query_existing_builds()
+            initial_builds = await self.query_existing_builds()
         else:  # only gets here if the for loop reaches the count
             raise Exception("Waited too long for build to start")
 
         return initial_builds
 
-    def build_result(self, job, number):
+    async def build_result(self, job, number):
         """Query the status of a known build"""
         return next((  # expecting exactly one result
             dict(
@@ -151,20 +167,20 @@ class BuildRhcosPipeline:
             if b["number"] == number
         ), None)
 
-    def wait_for_builds(self):
+    async def wait_for_builds(self):
         """Wait for all builds for this version to complete, and give status updates on stderr"""
         builds_seen: Dict[Tuple, str] = {}
         completed_builds: Dict[Tuple, Dict] = {}
         for _ in range(1440):  # x 10s = about 4 hours (slower if bad/no response)
             new_builds_seen: Dict[Tuple, str] = {
                 (b["job"], b["number"]): b["description"] or "[no description yet]"
-                for b in self.query_existing_builds()
+                for b in await self.query_existing_builds()
             }
 
             # check if any previous builds have newly completed
             for spec in builds_seen.keys():
                 if spec not in new_builds_seen and spec not in completed_builds:
-                    completed_builds[spec] = completed = self.build_result(*spec)
+                    completed_builds[spec] = completed = await self.build_result(*spec)
                     if completed:  # silently ignore if it's somehow not there... should never happen
                         print(f"{completed['url']} finished with {completed['result']}: '{completed['description']}'", file=sys.stderr)
 
@@ -189,14 +205,17 @@ class BuildRhcosPipeline:
 
 
 @cli.command("build-rhcos")
-@click.option("--version", required=True, type=str,
+@click.option("--rhcos-version", required=False, type=str,
+              help="The version to build, e.g. '4.13-el9'. If not supplied, config will be read from group.yml")
+@click.option("--ocp-version", required=True, type=str,
               help="The version to build, e.g. '4.13'")
 @click.option("--ignore-running", required=False, default=False, type=bool,
               help="Ignore in-progress builds instead of just exiting like usual")
 @click.option("--new-build", required=False, default=False, type=bool,
               help="Force a new build even if no changes were detected from the last build")
 @pass_runtime
-def build_rhcos(runtime: Runtime, new_build: bool, ignore_running: bool, version: str):
-    if not re.match(r'^\d+\.\d+$', version):
+@click_coroutine
+async def build_rhcos(runtime: Runtime, new_build: bool, ignore_running: bool, ocp_version: str, rhcos_version: str = ''):
+    if not re.match(r'^\d+\.\d+$', ocp_version):
         raise Exception("Version must be in the format 'x.y'")
-    BuildRhcosPipeline(runtime, new_build, ignore_running, version).run()
+    await BuildRhcosPipeline(runtime, new_build, ignore_running, ocp_version, rhcos_version).run()
