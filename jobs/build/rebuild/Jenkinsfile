@@ -121,7 +121,7 @@ node {
                 ]) {
                     echo "Will run ${cmd}"
                     withEnv([
-                        "BUILD_USER_EMAIL=${builderEmail?: ''}",
+                        "BUILD_USER_EMAIL=aos-team-art+rebuild@redhat.com",
                         "BUILD_URL=${BUILD_URL}",
                         "JOB_NAME=${JOB_NAME}",
                         'DOOZER_DB_NAME=art_dash'
