@@ -155,6 +155,7 @@ node {
                 if [ -e ${local_dest_dir}/sha256sum.txt ]; then
                     cat ${local_dest_dir}/sha256sum.txt
                 fi
+		ls -l ${local_dest_dir}
                 """
             )
         }
@@ -183,6 +184,7 @@ node {
                 set -euxo pipefail
                 rm -rf ${latest_dir}
                 cp --verbose --recursive --preserve=all --dereference --copy-contents ${local_dest_dir} ${latest_dir}
+		ls -l ${latest_dir}
                 """
             )
 
