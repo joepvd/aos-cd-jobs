@@ -1,0 +1,46 @@
+#!/usr/bin/env groovy
+// Test Jenkinsfile for closing reconciliation bugs
+// NOT FOR MERGE - testing only
+
+node {
+    timestamps {
+        checkout scm
+        def buildlib = load("pipeline-scripts/buildlib.groovy")
+        commonlib = buildlib.commonlib
+
+        properties([
+            disableResume(),
+            buildDiscarder(logRotator(daysToKeepStr: '7')),
+            [
+                $class: 'ParametersDefinitionProperty',
+                parameterDefinitions: [
+                    commonlib.mockParam(),
+                    commonlib.artToolsParam(),
+                    string(
+                        name: "VERSION",
+                        description: "OCP version (e.g. 4.22)",
+                        defaultValue: "4.22",
+                        trim: true,
+                    ),
+                    booleanParam(
+                        name: "DRY_RUN",
+                        description: "Run in noop mode (don't actually close bugs)",
+                        defaultValue: true,
+                    ),
+                ]
+            ]
+        ])
+
+        commonlib.checkMock()
+
+        stage('close-reconciliation-bugs') {
+            def dryRunFlag = params.DRY_RUN ? "--noop" : ""
+            
+            withCredentials([string(credentialsId: 'jboss-jira-token', variable: 'JIRA_TOKEN')]) {
+                sh """
+                    elliott -g openshift-${params.VERSION} find-bugs:qe ${dryRunFlag}
+                """
+            }
+        }
+    }
+}
